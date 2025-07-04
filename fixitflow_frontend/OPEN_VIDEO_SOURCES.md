@@ -77,25 +77,119 @@ This document lists reputable sources/platforms for DIY electronics, home applia
 
 ## Integration Survey: Vimeo & PeerTube
 
+---
+
 ### Vimeo
 
-- **Search:** Yes, via web and API, but advanced API requires OAuth (not anonymous).
-- **Embed:** Full iframe/embed support for public videos.
-- **Embedding Example:**
-  ```
-  <iframe src="https://player.vimeo.com/video/{VIDEO_ID}" ... ></iframe>
-  ```
-- **API Link:** https://developer.vimeo.com/
+- **Direct Embedding:**  
+  - All public Vimeo videos (including Creative Commons-licensed) are embeddable via `<iframe>`. No login required for viewing or embedding.  
+  - Example:  
+    ```
+    <iframe src="https://player.vimeo.com/video/{VIDEO_ID}" width="640" height="360" frameborder="0" allowfullscreen></iframe>
+    ```
+- **API Access:**  
+  - Two main APIs: [Vimeo Player API](https://developer.vimeo.com/player) (for controlling embeds) and [Vimeo Data API](https://developer.vimeo.com/api/reference/videos#get_videos) (for search/list queries).
+  - **Public Search**: Basic unauthenticated search is available but limited. Advanced/filtering (such as search by license) requires user-level OAuth authentication.  
+  - **Discovering CC Videos**:  
+    - Manual: Browse at https://vimeo.com/creativecommons (by license, tags, query).
+    - Via API: Not possible for completely anonymous/public clients; requires at least an OAuth "client credentials" token even for simple queries.
+- **Rate Limits:**  
+  - API rate limits apply. On the free tier, typically 600 requests/15 minutes for unauthenticated, and 1500 requests/15 minutes for authenticated. See [Rate Limit Docs](https://developer.vimeo.com/api/reference#rate-limiting).
+- **Licensing:**  
+  - CC licenses (CC BY, SA, NC, ND, etc.) are set per video. Attribution required according to license. Embedding is always allowed (except region/country restrictions), but not all videos allow download/redistribution as files (check attributes per video).
+- **Drawbacks:**  
+  - API for programmatic search is not fully usable without signed-in credentials—no open anonymous programmatic discovery of content or license.  
+  - Some videos might be geo-blocked or have restricted embeds.
+- **Integration Guidance for FixItFlow:**  
+  - Embedding known CC videos is straightforward; programmatic anonymous search/filtering is not. Best for user-copied URLs or pre-curated lists.
+  - If surfacing new content dynamically, consider a human moderation pipeline, as anonymous API cannot reliably filter by license.
+
+---
 
 ### PeerTube
 
-- **Search:** Public RESTful API ([API docs](https://docs.joinpeertube.org/api-rest-api.html)).
-- **Embed:** All public videos embeddable via instance’s `videos/embed/` endpoint.
-- **Embedding Example:**
-  ```
-  <iframe src="https://peertube.instance/videos/embed/{VIDEO_ID}" ... ></iframe>
-  ```
-- **API Link:** https://docs.joinpeertube.org/api-rest-api.html
+- **Direct Embedding:**  
+  - Any public video on a PeerTube instance can be embedded via iframe without an account.  
+  - Example:  
+    ```
+    <iframe src="https://{INSTANCE.DOMAIN}/videos/embed/{VIDEO_ID}" width="640" height="360" frameborder="0" allowfullscreen></iframe>
+    ```
+- **API Access:**  
+  - Each PeerTube instance exposes an Open RESTful API ([API docs](https://docs.joinpeertube.org/api-rest-api.html)).  
+  - Fully anonymous search by keyword, by license, by tags, by category, etc. is supported. No login or OAuth needed for public info.  
+  - Example API:  
+    ```
+    GET https://{INSTANCE.DOMAIN}/api/v1/videos?search=repair&licence=Creative%20Commons%20BY
+    ```
+- **Rate Limits:**  
+  - Each instance may set its own rate limits; most public/federated instances are generous if traffic is reasonable. Heavy use may trigger per-instance throttling/bans.
+- **Licensing:**  
+  - Video contributors pick a license (CC0, CC BY, CC BY-SA, CC BY-NC, etc.) at upload. This is returned with video objects in API responses, enabling strict filtering for redistributable content.
+- **Content Discoverability:**  
+  - Fully discoverable via API and searchable publicly. Each instance is independent, and federated search needs cross-instance queries or via aggregators (e.g., SepiaSearch).
+- **Drawbacks:**  
+  - Video pool is spread across many smaller instances, so there is no single global directory.  
+  - Some instances may have variable uptime or inconsistent moderation.  
+  - No uniform user experience—UI/theme varies slightly per instance.
+- **Integration Guidance for FixItFlow:**  
+  - Preferred choice for in-app, open-license repair videos.  
+  - Query instances directly for open-licensed DIY content; maintain a vetted instance allow-list for stability/trust.  
+  - Download/redistribute or re-package videos if license permits and bandwidth/storage supports it, otherwise embed.
+
+---
+
+### Summary Table (Vimeo vs PeerTube)
+
+| Feature                    | Vimeo                                  | PeerTube                                      |
+|----------------------------|----------------------------------------|-----------------------------------------------|
+| Embedding allowed          | Yes (iframe)                           | Yes (iframe)                                  |
+| API search (license filter)| Not anonymously; OAuth needed          | Yes, fully public, no OAuth required          |
+| Rate limits                | Yes (tiered; 600-1500/15min)           | Per-instance; often generous for public use   |
+| Licensing granularity      | Per-video (multiple CC types)          | Per-video (wider CC/PD/other, explicit)       |
+| Content discoverability    | Web, manual browsing or limited API    | API—public, federated (across instances)      |
+| Downloadability            | Sometimes; as set per video/author     | Yes, if license permits (check per-video API) |
+| Main drawbacks             | API search is restricted w/o account   | Decentralized, smaller pools, instance admin  |
+| Guidance for FixItFlow     | Best for handpicked/video-URL lists;   | Best for in-app discovery and dynamic search  |
+|                            | programmatic search is limited         | API and licensing enforcement is strong       |
+
+---
+
+#### Rate Limits (Direct):
+
+- **Vimeo:**  
+  - Free API: 600 requests/15min per access token (unauthenticated/public); OAuth raises this to 1500/15min.
+  - Embedding does NOT hit API limits (just HTML requests).
+
+- **PeerTube:**  
+  - No central limit but each instance may limit abusive clients. Most allow 100s/minute or more if usage is non-abusive.
+
+---
+
+#### Typical Licensing:
+
+- **Vimeo:**  
+  - Supports all Creative Commons types, set per-video. Observe video page metadata for attribution and allowed uses.
+- **PeerTube:**  
+  - Wide range: CC0, BY, BY-SA, NC, ND; license returns in video API data (strict filtering possible).
+
+---
+
+#### Recommended FixItFlow Integration Steps
+
+- **PeerTube (recommended for open content):**
+  - Query public API endpoints from known-good instances for DIY/repair keywords; filter by license in results.
+  - Embed videos via iframe. Optional: download/self-host if license permits and added stability desired.
+  - Provide attribution and license info in-app.
+  - Maintain fallback/embed in-app experience even if remote instance is momentarily offline.
+
+- **Vimeo:**
+  - Only embed known-licensed video URLs (manual curation or user input). Inform users not all Vimeo content is open-license or redistributable.
+  - Do not rely on programmatic anonymous search for broad discovery of CC content. If dynamic discovery is desired, require a backend service for token management/OAuth.
+  - Respect all per-video attribution and display license metadata clearly.
+
+- **General:**
+  - Favor embedding for performance and regulatory/legal simplicity. Only download and re-serve if license and capacity permit.
+  - Comply with TOS of each platform, especially for API key use.
 
 ---
 
