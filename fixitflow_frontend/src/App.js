@@ -15,7 +15,12 @@ const COLORS = {
 const IFIXIT_API = "https://www.ifixit.com/api/2.0";
 const YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search";
 
-// PUBLIC_INTERFACE
+/**
+ * PUBLIC_INTERFACE
+ * Expanded App for FixItFlow: Allows image upload, object recognition,
+ * user problem description, fetches and displays iFixit repair step guides
+ * interactively and relevant YouTube videos.
+ */
 function App() {
   const [image, setImage] = useState(null);
   const [recognizedObjects, setRecognizedObjects] = useState([]);
@@ -27,6 +32,10 @@ function App() {
   const [videos, setVideos] = useState([]);
   const [keyword, setKeyword] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
+
+  // New: User problem description
+  const [userProblem, setUserProblem] = useState("");
+  const [problemError, setProblemError] = useState(null);
 
   const [theme, setTheme] = useState("light");
 
@@ -52,6 +61,7 @@ function App() {
     setGuides([]);
     setVideos([]);
     setKeyword("");
+    setUserProblem(""); // also clear problem desc when new photo
     await runObjectRecognition(file);
   };
 
@@ -161,14 +171,26 @@ function App() {
   }
 
   // PUBLIC_INTERFACE
-  async function fetchGuidesAndVideos(mainKeyword) {
+  /**
+   * Fetch iFixit guides and YouTube videos, inferring search better from
+   * both recognized label and user problem text.
+   */
+  async function fetchGuidesAndVideos(mainKeyword, problemText = "") {
     setSearchLoading(true);
     setGuides([]);
     setVideos([]);
+    let searchUsed = mainKeyword;
     try {
+      // Step 1: Compose a smarter search query.
+      let query = mainKeyword;
+      if (problemText && problemText.length > 2) {
+        // Tailor search. Eg: "toaster won't heat up"
+        query = `${mainKeyword} ${problemText}`.trim();
+        searchUsed = query;
+      }
       // iFixit: Find relevant guides (by device or search endpoint)
       let guidesResp = await fetch(
-        `${IFIXIT_API}/search/${encodeURIComponent(mainKeyword)}`
+        `${IFIXIT_API}/search/${encodeURIComponent(query)}`
       );
       let guidesJson = await guidesResp.json();
       // Flatten search: Count guides for all items; prefer those with steps
@@ -190,7 +212,7 @@ function App() {
       setGuides(allGuides.slice(0, 4));
       // YouTube search for repair/tutorials
       const videoQ =
-        encodeURIComponent(mainKeyword + " repair tutorial OR fix guide");
+        encodeURIComponent(query + " repair tutorial OR fix guide");
       let ytReq = `${YOUTUBE_SEARCH_URL}?key=${process.env.REACT_APP_YOUTUBE_API_KEY}&type=video&part=snippet&maxResults=4&q=${videoQ}`;
       let ytRes = await fetch(ytReq);
       let ytData = await ytRes.json();
@@ -211,11 +233,24 @@ function App() {
   }
 
   // PUBLIC_INTERFACE
+  // Submission when user provides either a keyword or updates the problem desc.
   const handleKeywordSubmit = async (e) => {
     e.preventDefault();
     if (!keyword.trim()) return;
     setRecognizedObjects([keyword.trim()]);
-    await fetchGuidesAndVideos(keyword.trim());
+    await fetchGuidesAndVideos(keyword.trim(), userProblem);
+  };
+
+  // PUBLIC_INTERFACE
+  // Submission when the problem description field is used directly.
+  const handleProblemDescSubmit = async (e) => {
+    e.preventDefault();
+    if (!keyword.trim()) {
+      setProblemError("Please provide a recognized object or keyword.");
+      return;
+    }
+    setProblemError(null);
+    await fetchGuidesAndVideos(keyword.trim(), userProblem);
   };
 
   // PUBLIC_INTERFACE
@@ -239,7 +274,7 @@ function App() {
         theme={theme}
         primaryColor={COLORS.primary}
       />
-      <main style={{ maxWidth: 900, margin: "0 auto", padding: "2rem 1rem" }}>
+      <main style={{ maxWidth: 960, margin: "0 auto", padding: "2rem 1rem" }}>
         <section style={cardSectionStyle}>
           <UploadCard
             image={image}
@@ -252,22 +287,32 @@ function App() {
             setKeyword={setKeyword}
             onKeywordSubmit={handleKeywordSubmit}
           />
-          <ResultCard
-            recognizedObjects={recognizedObjects}
-            recogLoading={objectRecognitionLoading}
-            recogError={recognitionError}
-            primaryColor={COLORS.primary}
-            accentColor={COLORS.accent}
-            keyword={keyword}
-            onKeywordSubmit={handleKeywordSubmit}
-            setKeyword={setKeyword}
-          />
+          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+            <ResultCard
+              recognizedObjects={recognizedObjects}
+              recogLoading={objectRecognitionLoading}
+              recogError={recognitionError}
+              primaryColor={COLORS.primary}
+              accentColor={COLORS.accent}
+              keyword={keyword}
+              onKeywordSubmit={handleKeywordSubmit}
+              setKeyword={setKeyword}
+            />
+            {/* User-provided problem description */}
+            <ProblemDescCard
+              userProblem={userProblem}
+              setUserProblem={setUserProblem}
+              onSubmit={handleProblemDescSubmit}
+              searchLoading={searchLoading}
+              problemError={problemError}
+            />
+          </div>
         </section>
         <section style={{ marginTop: 36 }}>
           <div style={sectionHeaderStyle(COLORS.secondary)}>
             <span>🔧 Step-by-step Repair Guides</span>
           </div>
-          <GuideGrid guides={guides} accentColor={COLORS.accent} />
+          <GuideStepsAccordion guides={guides} accentColor={COLORS.accent} />
         </section>
         <section style={{ marginTop: 36 }}>
           <div style={sectionHeaderStyle(COLORS.primary)}>
@@ -509,8 +554,10 @@ const cardStyle = {
   boxSizing: "border-box",
 };
 
-// ------------- Result Card ----------------------
-// PUBLIC_INTERFACE
+/**
+ * PUBLIC_INTERFACE
+ * Step 2: Recognition Results Card (context only).
+ */
 function ResultCard({
   recognizedObjects,
   recogLoading,
@@ -563,101 +610,264 @@ function ResultCard({
         </span>
         <br />
         <span style={{ fontSize: 14, color: "#888" }}>
-          We search for guides/videos based on this.
+          Results and repair guides are tailored to this.
         </span>
       </div>
     </div>
   );
 }
 
-// ----------- Guides Grid ---------------------
-// PUBLIC_INTERFACE
-function GuideGrid({ guides, accentColor }) {
+/**
+ * PUBLIC_INTERFACE
+ * Lets the user input a problem/description to improve diagnosis and the
+ * specificity of repair guides.
+ */
+function ProblemDescCard({ userProblem, setUserProblem, onSubmit, searchLoading, problemError }) {
+  return (
+    <form
+      onSubmit={onSubmit}
+      style={{
+        background: "#fff",
+        borderRadius: 18,
+        border: "2px solid #f4f4f4",
+        boxShadow: "0 2px 8px #f6f6f6",
+        padding: "28px 22px 18px 22px",
+        minHeight: 110,
+        maxWidth: 390,
+        width: "100%",
+        margin: "0 auto",
+        boxSizing: "border-box",
+        display: "flex",
+        flexDirection: "column",
+        gap: 7,
+      }}
+    >
+      <label htmlFor="problem-desc" style={{ fontWeight: 700, fontSize: 15.5, marginBottom: 1 }}>
+        3. Briefly describe what's wrong (optional):
+      </label>
+      <textarea
+        id="problem-desc"
+        value={userProblem}
+        placeholder="e.g., Toaster won't heat up, screen cracked, bike chain keeps slipping..."
+        onChange={(e) => setUserProblem(e.target.value)}
+        rows={2}
+        maxLength={240}
+        style={{
+          width: "100%",
+          padding: "8px 11px",
+          fontSize: 15,
+          border: "1.5px solid #ccc",
+          borderRadius: 7,
+          resize: "none",
+        }}
+        disabled={searchLoading}
+        spellCheck
+      />
+      <button
+        type="submit"
+        disabled={searchLoading || !userProblem.trim()}
+        style={{
+          marginTop: 8,
+          alignSelf: "flex-start",
+          background: "#fbc02d",
+          color: "#222",
+          fontWeight: 700,
+          border: "none",
+          borderRadius: 8,
+          padding: "8px 21px",
+          fontSize: 15,
+          cursor: searchLoading ? "wait" : "pointer",
+          opacity: userProblem.trim() ? 1 : 0.65,
+        }}
+      >
+        {searchLoading ? "Searching..." : "Improve Results"}
+      </button>
+      {problemError && (
+        <span style={{ color: "#e53935", fontSize: 15, marginTop: 2 }}>{problemError}</span>
+      )}
+      <span style={{ color: "#888", fontSize: 13, marginTop: 7 }}>
+        Use your own words to explain the issue, symptoms, or what you tried. (Optional, but helps pinpoint the right fix!)
+      </span>
+    </form>
+  );
+}
+
+/**
+ * PUBLIC_INTERFACE
+ * Improved interactive accordion for Step-by-step Repair Guides.
+ * Each guide shows its steps on click (fetch from iFixit if needed).
+ */
+function GuideStepsAccordion({ guides, accentColor }) {
+  const [expanded, setExpanded] = useState(null);
+  const [stepsData, setStepsData] = useState({});
+  const [loadingStepGuide, setLoadingStepGuide] = useState(false);
+  const [fetchedGuideIds, setFetchedGuideIds] = useState({});
+
+  // Fetch step-by-step guide details from iFixit API on demand.
+  const fetchGuideSteps = async (guide) => {
+    if (stepsData[guide.guideid] || fetchedGuideIds[guide.guideid]) return;
+    setLoadingStepGuide(true);
+    try {
+      const resp = await fetch(`${IFIXIT_API}/guides/${guide.guideid}`);
+      const json = await resp.json();
+      setStepsData((s) => ({ ...s, [guide.guideid]: json }));
+      setFetchedGuideIds((o) => ({ ...o, [guide.guideid]: true }));
+    } catch (err) {
+      setStepsData((s) => ({
+        ...s,
+        [guide.guideid]: { error: "Could not fetch step details." },
+      }));
+    }
+    setLoadingStepGuide(false);
+  };
+
+  // UI: If none, minimal.
   if (!guides?.length)
     return <div style={{ color: "#bbb", minHeight: 70 }}>No guides found.</div>;
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))",
-        gap: 22,
-      }}
-    >
-      {guides.map((g) => (
-        <GuideCard guide={g} accentColor={accentColor} key={g.guideid} />
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "1fr",
+      gap: 22,
+      minWidth: 320,
+      maxWidth: 850,
+      margin: "0 auto"
+    }}>
+      {guides.map((guide, idx) => (
+        <div
+          key={guide.guideid}
+          style={{
+            background: "#fff",
+            borderRadius: 14,
+            boxShadow: "0 2px 9px #f5f5f7",
+            border: "1.5px solid #e3eefc",
+            padding: "0 0 0 0",
+            marginBottom: 6
+          }}
+        >
+          <button
+            onClick={() => {
+              setExpanded((current) => (current === guide.guideid ? null : guide.guideid));
+              if (!stepsData[guide.guideid]) fetchGuideSteps(guide);
+            }}
+            style={{
+              background: "none",
+              border: "none",
+              width: "100%",
+              padding: "17px 22px 16px 22px",
+              fontWeight: 700,
+              fontSize: 17.5,
+              textAlign: "left",
+              color: "#1e439a",
+              cursor: "pointer",
+              outline: "none",
+            }}
+            aria-expanded={expanded === guide.guideid}
+            aria-controls={`gsteps-${guide.guideid}`}
+          >
+            {expanded === guide.guideid ? "▼" : "▶"} {guide.title}
+            <span
+              style={{
+                marginLeft: 17,
+                background: accentColor,
+                color: "#fff",
+                borderRadius: 7,
+                padding: "2px 9px",
+                fontSize: 13.5,
+                fontWeight: 700,
+                verticalAlign: "middle"
+              }}
+            >
+              {guide.steps ? `${guide.steps} steps` : "DIY"}
+            </span>
+            {guide.time_required && (
+              <span style={{ color: "#555", marginLeft: 7, fontWeight: 400 }}>
+                ⏱ {guide.time_required}
+              </span>
+            )}
+          </button>
+          <div
+            id={`gsteps-${guide.guideid}`}
+            style={{
+              display: expanded === guide.guideid ? "block" : "none",
+              padding: "0 22px 19px 30px",
+              borderTop: "1.5px solid #f7e5c1",
+              background: "#f9fafb",
+            }}
+          >
+            {/* Show guide detail */}
+            <GuideStepDetails
+              guide={guide}
+              stepsDetail={stepsData[guide.guideid]}
+              loading={loadingStepGuide && expanded === guide.guideid}
+            />
+          </div>
+        </div>
       ))}
     </div>
   );
 }
 
-// PUBLIC_INTERFACE
-function GuideCard({ guide, accentColor }) {
+/**
+ * Step-by-step instructions per guide, with each step as a sub-card.
+ */
+function GuideStepDetails({ guide, stepsDetail, loading }) {
+  if (loading) return <div>Loading steps…</div>;
+  if (stepsDetail?.error) return <div style={{ color:"#b53c00" }}>{stepsDetail.error}</div>;
+  if (!stepsDetail || !stepsDetail.steps) {
+    return (
+      <div style={{ color: "#888", fontSize: 15 }}>
+        No step-by-step details available for this guide.
+        <br />
+        <a href={`https://www.ifixit.com/Guide/${guide.guideid}`} rel="noopener noreferrer" target="_blank">View full guide on iFixit &rarr;</a>
+      </div>
+    );
+  }
   return (
-    <div
-      style={{
-        background: "#fff",
-        borderRadius: 14,
-        boxShadow: "0 2px 7px #f5f5f7",
-        border: "1.5px solid #f6f9fa",
-        padding: 22,
-        display: "flex",
-        flexDirection: "column",
-        minHeight: 190,
-      }}
-    >
-      <a
-        href={`https://www.ifixit.com/Guide/${guide.guideid}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{
-          fontWeight: 700,
-          fontSize: 18,
-          marginBottom: 11,
-          color: "#1e439a",
-          textDecoration: "none",
-        }}
-      >
-        {guide.title}
-      </a>
-      <div style={{ fontSize: 14, marginBottom: 12, color: "#444" }}>
-        {guide.subject && <span>{guide.subject}</span>}{" "}
-        <span>
-          {guide.device && <span>({guide.device})</span>}
-        </span>
-      </div>
-      <div style={{ marginBottom: 9, fontSize: 14 }}>
-        <span
-          style={{
-            background: accentColor,
-            color: "#fff",
-            borderRadius: 7,
-            padding: "3px 10px",
-            fontSize: 13,
-            marginRight: 10,
-          }}
-        >
-          {guide.steps ? `${guide.steps} steps` : "DIY"}
-        </span>
-        {guide.time_required && (
-          <span style={{ color: "#555" }}>
-            ⏱ {guide.time_required}
-          </span>
-        )}
-      </div>
-      {/* Tools */}
-      {guide.tools && Array.isArray(guide.tools) && guide.tools.length > 0 && (
-        <div style={{ margin: "7px 0 0 0", fontSize: 13 }}>
-          <b>Tools:</b>{" "}
-          {guide.tools
-            .map((tool) =>
-              typeof tool === "string"
-                ? tool
-                : tool.text || tool.name || tool
-            )
-            .join(", ")}
-        </div>
-      )}
-    </div>
+    <ol style={{
+      listStyle: "decimal inside",
+      padding: 0,
+      margin: "14px 0 0 0",
+      fontSize: 15.5
+    }}>
+      {stepsDetail.steps.map((step, idx) => (
+        <li key={idx} style={{
+          background: "#fff",
+          margin: "0 0 14px 0",
+          padding: "15px 17px 12px 13px",
+          border: "1px solid #f7e2bb",
+          borderLeft: "5px solid #fbc02d",
+          borderRadius: 7,
+          boxShadow: "0 1px 6px #fbeee1",
+          color: "#222",
+          position: "relative"
+        }}>
+          <b style={{fontSize:16}}>Step {step.ordinal || idx + 1}:</b> &nbsp;
+          {step.title && <span style={{fontWeight:700}}>{step.title}. </span>}
+          <span dangerouslySetInnerHTML={{ __html: step.text_raw || step.text_html || "" }} />
+          {/* Images if any */}
+          {Array.isArray(step.images) && step.images[0] &&
+            <div style={{marginTop:7}}>
+              {step.images.slice(0,2).map((img, i) =>
+                <img
+                  src={img.standard || img.thumbnail}
+                  key={img.id || i}
+                  alt={step.title || ""}
+                  style={{
+                    maxWidth: "96%",
+                    height: 94,
+                    objectFit: "cover",
+                    borderRadius: 5,
+                    marginRight: 12,
+                    border: "1.5px solid #fbc02d33"
+                  }}
+                />
+              )}
+            </div>
+          }
+        </li>
+      ))}
+    </ol>
   );
 }
 
