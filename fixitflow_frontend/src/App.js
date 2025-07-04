@@ -210,114 +210,175 @@ function App() {
   /**
    * Fetch iFixit guides and YouTube videos, with enhanced API diagnostic and result handling.
    */
+  // PUBLIC_INTERFACE
+  /**
+   * Fetch iFixit guides and YouTube videos, with retry/fallback logic for broad search queries.
+   * If no results from initial query, retries with relaxed queries and common repair keywords.
+   */
   async function fetchGuidesAndVideos(mainKeyword, problemText = "") {
     setSearchLoading(true);
     setGuides([]);
     setVideos([]);
     let searchUsed = mainKeyword;
     let errorMessage = null;
-    try {
-      // Step 1: Compose a smarter search query.
-      let query = mainKeyword;
-      if (problemText && problemText.length > 2) {
-        query = `${mainKeyword} ${problemText}`.trim();
-        searchUsed = query;
-      }
 
-      // iFixit: Find relevant guides robustly
+    // Helper for iFixit fetch
+    async function tryFetchGuides(query) {
       let guidesUrl = `${IFIXIT_API}/search/${encodeURIComponent(query)}`;
-      let allGuides = [];
       let guidesJson = {};
-
+      let allGuides = [];
       try {
         let guidesResp = await fetch(guidesUrl);
         guidesJson = await guidesResp.json();
-
         if (Array.isArray(guidesJson.results)) {
           for (let item of guidesJson.results) {
-            // Both shape: individual guide or a device/group with guides
             if (item.guideid) allGuides.push(item);
             if (item.guides && Array.isArray(item.guides))
-              allGuides.push(...item.guides.filter(g => g.guideid));
+              allGuides.push(...item.guides.filter((g) => g.guideid));
           }
         }
-        // Some fallback: sometimes guides are top-level
         if (allGuides.length === 0 && Array.isArray(guidesJson.guides)) {
-          allGuides = guidesJson.guides.filter(g => g.guideid);
+          allGuides = guidesJson.guides.filter((g) => g.guideid);
         }
-        // Sometimes single guide present as .guide
         if (allGuides.length === 0 && guidesJson.guide && guidesJson.guide.guideid) {
           allGuides.push(guidesJson.guide);
         }
-        // Deduplicate by guideid
-        allGuides = Object.values(allGuides.reduce((acc, g) => {
-          if (g.guideid) acc[g.guideid] = g;
-          return acc;
-        }, {}));
-        setGuides(allGuides.slice(0, 4));
-      } catch (ifixErr) {
-        errorMessage = "iFixit API error: " + (ifixErr.message || "Could not fetch guides.");
-        setGuides([]);
+        allGuides = Object.values(
+          allGuides.reduce((acc, g) => {
+            if (g.guideid) acc[g.guideid] = g;
+            return acc;
+          }, {})
+        );
+        return allGuides.slice(0, 4);
+      } catch (err) {
+        throw new Error(
+          "iFixit API error: " + (err.message || "Could not fetch guides.")
+        );
       }
+    }
 
-      // ---------- YouTube Video Tutorials Search ----------
-      // Must have a valid API key
+    // Helper for YouTube search
+    async function tryFetchVideos(query) {
       const YT_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY;
       if (!YT_API_KEY || YT_API_KEY === "YOUR_API_KEY_HERE") {
-        setVideos([]);
-        if (errorMessage)
-          errorMessage += " — ";
-        errorMessage = (errorMessage || "") + "YouTube API key is missing. Set REACT_APP_YOUTUBE_API_KEY in an .env file.";
-      } else {
-        const videoQ = encodeURIComponent(query + " repair tutorial OR fix guide");
-        let ytReq = `${YOUTUBE_SEARCH_URL}?key=${YT_API_KEY}&type=video&part=snippet&maxResults=4&q=${videoQ}`;
-        let ytRes, ytData;
-        try {
-          ytRes = await fetch(ytReq);
-          ytData = await ytRes.json();
-          if (!ytRes.ok || ytData.error) {
-            throw new Error(
-              (ytData.error && ytData.error.message) ||
+        throw new Error(
+          "YouTube API key is missing. Set REACT_APP_YOUTUBE_API_KEY in an .env file."
+        );
+      }
+      const videoQ = encodeURIComponent(query + " repair tutorial OR fix guide");
+      let ytReq = `${YOUTUBE_SEARCH_URL}?key=${YT_API_KEY}&type=video&part=snippet&maxResults=4&q=${videoQ}`;
+      let ytRes, ytData;
+      try {
+        ytRes = await fetch(ytReq);
+        ytData = await ytRes.json();
+        if (!ytRes.ok || ytData.error) {
+          throw new Error(
+            (ytData.error && ytData.error.message) ||
               `YouTube API error (HTTP ${ytRes.status})`
-            );
-          }
-          setVideos(
-            (ytData.items || []).map((vid) => ({
-              id: vid.id.videoId,
-              title: vid.snippet.title,
-              thumb: vid.snippet.thumbnails.medium.url,
-              channel: vid.snippet.channelTitle,
-            }))
           );
-        } catch (ytErr) {
-          setVideos([]);
-          if (errorMessage)
-            errorMessage += " — ";
-          errorMessage = (errorMessage || "") + "YouTube error: " + ytErr.message;
+        }
+        // Return normalized video objects
+        return (ytData.items || []).map((vid) => ({
+          id: vid.id.videoId,
+          title: vid.snippet.title,
+          thumb: vid.snippet.thumbnails.medium.url,
+          channel: vid.snippet.channelTitle,
+        }));
+      } catch (ytErr) {
+        throw new Error("YouTube error: " + ytErr.message);
+      }
+    }
+
+    // Smart fallbacks for queries (object, text, join, broad, etc.)
+    // Order: [combined, object only, text only, generic repair]
+    let candidateQueries = [];
+    const objectOnly = mainKeyword?.trim() || "";
+    const textOnly = (problemText && problemText.trim()) || "";
+    candidateQueries.push(objectOnly && textOnly ? (objectOnly + " " + textOnly).trim() : objectOnly);
+    if (objectOnly && textOnly) {
+      candidateQueries.push(objectOnly);
+      candidateQueries.push(textOnly);
+    } else if (objectOnly) {
+      candidateQueries.push(objectOnly);
+    } else if (textOnly) {
+      candidateQueries.push(textOnly);
+    }
+    // Add a set of fallback generic phrases
+    [
+      "repair",
+      "broken",
+      "fix guide",
+      "disassembly",
+      "troubleshooting"
+    ].forEach((generic) => {
+      if (objectOnly) candidateQueries.push((objectOnly + " " + generic).trim());
+    });
+
+    let foundGuides = [];
+    let foundVideos = [];
+    let guidesAttempted = false;
+    let videosAttempted = false;
+    let guidesErrs = [];
+    let vidsErrs = [];
+
+    for (let i = 0; i < candidateQueries.length; ++i) {
+      let cq = candidateQueries[i];
+      // Guides first
+      if (!foundGuides.length) {
+        try {
+          let tryG = await tryFetchGuides(cq);
+          if (tryG && tryG.length > 0) {
+            foundGuides = tryG;
+          }
+          guidesAttempted = true;
+        } catch (err) {
+          guidesErrs.push((err && err.message) || String(err));
         }
       }
-
-      if (
-        (!allGuides || allGuides.length === 0) &&
-        (!YT_API_KEY || !errorMessage) &&
-        (!videos || videos.length === 0)
-      ) {
-        errorMessage =
-          errorMessage ||
-          "No matching repair guides or videos found for this query. Try a different keyword or description.";
+      // Videos next
+      if (!foundVideos.length) {
+        try {
+          let tryV = await tryFetchVideos(cq);
+          if (tryV && tryV.length > 0) {
+            foundVideos = tryV;
+          }
+          videosAttempted = true;
+        } catch (err) {
+          vidsErrs.push((err && err.message) || String(err));
+        }
       }
-    } catch (err) {
-      errorMessage =
-        (errorMessage ? errorMessage + " — " : "") + "Fetching resources failed: " + err.message;
-      setGuides([]);
-      setVideos([]);
+      // If we have both, break early
+      if (foundGuides.length || foundVideos.length) break;
     }
 
-    if (errorMessage) {
-      setRecognitionError(errorMessage);
-    } else {
-      setRecognitionError(null);
+    setGuides(foundGuides);
+    setVideos(foundVideos);
+
+    // Friendly and instructive messaging
+    if (!foundGuides.length && !foundVideos.length) {
+      let searchDesc = (mainKeyword || "(no object recognized)") + (problemText ? " / " + problemText : "");
+      errorMessage =
+        "Sorry, we couldn't find any relevant repair guides or video tutorials for your search: " +
+        '"' + searchDesc + '".' +
+        " Please check your spelling or try a different item, symptom description, or simpler keyword. " +
+        "If you think this is an error, you may be experiencing temporary connectivity or API issues.";
+      // Attach error details for support/debug
+      if (guidesErrs.length || vidsErrs.length) {
+        errorMessage += "\n\nTechnical info:\n";
+        if (guidesErrs.length) errorMessage += "Guides: " + guidesErrs.join("; ") + ". ";
+        if (vidsErrs.length) errorMessage += "Videos: " + vidsErrs.join("; ") + ".";
+      }
+    } else if (!foundGuides.length) {
+      errorMessage =
+        "No step-by-step repair guides were found for your search, but DIY video tutorials are available below.";
+      if (guidesErrs.length) errorMessage += "\n" + guidesErrs.join("; ");
+    } else if (!foundVideos.length) {
+      errorMessage =
+        "No video tutorials found for your search, but step-by-step repair guides are available above.";
+      if (vidsErrs.length) errorMessage += "\n" + vidsErrs.join("; ");
     }
+
+    setRecognitionError(errorMessage || null);
     setSearchLoading(false);
   }
 
@@ -965,8 +1026,10 @@ function GuideStepDetails({ guide, stepsDetail, loading }) {
   );
 }
 
-// ----------- Videos Grid ---------------------
-// PUBLIC_INTERFACE
+/**
+ * PUBLIC_INTERFACE
+ * Shows a grid of videos or fallback messaging.
+ */
 function VideoGrid({ videos, recogError }) {
   if (!videos?.length)
     return (
@@ -990,7 +1053,14 @@ function VideoGrid({ videos, recogError }) {
 }
 
 // PUBLIC_INTERFACE
+/**
+ * Embedded YouTube card with thumbnail fallback if embed fails/blocked.
+ */
 function VideoCard({ video }) {
+  // Handles embed errors
+  const [iframeFail, setIframeFail] = React.useState(false);
+
+  // Try to embed, if blocked, show a thumbnail + external link fallback
   return (
     <div
       style={{
@@ -1005,30 +1075,95 @@ function VideoCard({ video }) {
         alignItems: "flex-start",
       }}
     >
-      <a
-        href={`https://youtube.com/watch?v=${video.id}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{
-          color: "#1e88e5",
-          textDecoration: "none",
-          fontWeight: 700,
-          fontSize: 16.5,
-        }}
-      >
-        <img
-          src={video.thumb}
-          alt={video.title}
-          style={{
-            width: "100%",
-            maxWidth: 294,
-            borderRadius: 8,
-            marginBottom: 10,
-            boxShadow: "0 1px 4px #eaf0fa",
-          }}
-        />
-        {video.title}
-      </a>
+      {!iframeFail ? (
+        <div style={{ position: "relative", width: "100%", maxWidth: 294, height: 165, marginBottom: 10 }}>
+          <iframe
+            title={video.title}
+            width="100%"
+            height="160"
+            style={{
+              width: "100%",
+              maxWidth: 294,
+              borderRadius: 8,
+              border: 0,
+              background: "#eee",
+              marginBottom: 5,
+            }}
+            src={`https://www.youtube.com/embed/${video.id}?rel=0&modestbranding=1`}
+            allowFullScreen
+            onError={() => setIframeFail(true)}
+            onLoad={(e) => {
+              // If iframe triggers load event but is blank (e.g., blocked by CSP), trigger fallback in ~1.5s
+              setTimeout(() => {
+                try {
+                  const iframe = e.target;
+                  if (
+                    iframe &&
+                    iframe.contentWindow &&
+                    iframe.contentWindow.length === 0
+                  ) {
+                    setIframeFail(true);
+                  }
+                } catch {
+                  // If accessing contentWindow throws, be conservative and fallback
+                  setIframeFail(true);
+                }
+              }, 1500);
+            }}
+          />
+          <noscript>
+            <div>
+              <a
+                href={`https://youtube.com/watch?v=${video.id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <img
+                  src={video.thumb}
+                  alt={video.title}
+                  style={{
+                    width: "100%",
+                    maxWidth: 294,
+                    borderRadius: 8,
+                    boxShadow: "0 1px 4px #eaf0fa",
+                  }}
+                />
+              </a>
+            </div>
+          </noscript>
+        </div>
+      ) : (
+        <div>
+          <a
+            href={`https://youtube.com/watch?v=${video.id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              color: "#1e88e5",
+              textDecoration: "none",
+              fontWeight: 700,
+              fontSize: 16.5,
+            }}
+          >
+            <img
+              src={video.thumb}
+              alt={video.title}
+              style={{
+                width: "100%",
+                maxWidth: 294,
+                borderRadius: 8,
+                marginBottom: 10,
+                boxShadow: "0 1px 4px #eaf0fa",
+              }}
+            />
+            {video.title}
+          </a>
+          <div style={{ color: "#b53c00", fontSize: 14, marginTop: 4 }}>
+            Video embedding failed or is blocked.<br />
+            Click the thumbnail to watch directly on YouTube.
+          </div>
+        </div>
+      )}
       <span
         style={{
           fontSize: 13,
