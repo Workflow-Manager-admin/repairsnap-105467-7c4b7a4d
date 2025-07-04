@@ -11,7 +11,17 @@ This project provides a minimal React template with a clean, modern UI and minim
 
 ## Getting Started
 
-In the project directory, you can run:
+1. **Set up your YouTube Data API key**<br>
+   Create a `.env` file in the root of `fixitflow_frontend` **(not the project root)** with:
+
+   ```
+   REACT_APP_YOUTUBE_API_KEY=YOUR_YOUTUBE_DATA_API_KEY
+   ```
+
+   - If you don’t set this in the `.env` file, YouTube videos won’t display and you’ll see a key missing warning.
+   - After adding or updating `.env`, always stop and restart your dev/build server.
+
+2. In the project directory, you can run:
 
 ### `npm start`
 
@@ -26,6 +36,13 @@ Launches the test runner in interactive watch mode.
 
 Builds the app for production to the `build` folder.\
 It correctly bundles React in production mode and optimizes the build for the best performance.
+
+> **Troubleshooting `.env` variables in React (Create React App):**
+>
+> - The `.env` file _must_ be next to this README (`fixitflow_frontend/.env`). **NOT** in the workspace/project root!
+> - Keys must be prefixed with `REACT_APP_`.
+> - You must restart the `npm start`/`npm run build` process after adding or changing `.env`.
+> - Do not wrap values in quotes, i.e. `REACT_APP_YOUTUBE_API_KEY=abcd...xyz`
 
 ## Customization
 

@@ -2,6 +2,31 @@ import React, { useState, useEffect, useRef } from "react";
 import "./App.css";
 
 /**
+ * .env/YouTube API Key Loading Diagnostics
+ * This code block at the top will print a warning in the development console (and during production build) if
+ * the environment variable is not set OR is set at an incorrect location.
+ * 
+ * For Create React App (CRA) and react-scripts:
+ * - .env must be in the root of the React app (fixitflow_frontend/.env)
+ * - Keys must be prefixed with REACT_APP_ (e.g., REACT_APP_YOUTUBE_API_KEY)
+ * - After adding/modifying .env, you MUST fully restart the dev or build script.
+ */
+if (
+  !process.env.REACT_APP_YOUTUBE_API_KEY ||
+  process.env.REACT_APP_YOUTUBE_API_KEY === "YOUR_API_KEY_HERE"
+) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[FixItFlow] WARNING: REACT_APP_YOUTUBE_API_KEY is missing (value:",
+    process.env.REACT_APP_YOUTUBE_API_KEY,
+    ").\n" +
+    "Please create a `.env` file at the *fixitflow_frontend* directory root and add:\n" +
+    "REACT_APP_YOUTUBE_API_KEY=YOUR_YOUTUBE_DATA_API_KEY\n" +
+    "Do NOT place .env in the parent repo root! After any change, restart `npm start`."
+  );
+}
+
+/**
  * Color palette for theme
  */
 const COLORS = {
