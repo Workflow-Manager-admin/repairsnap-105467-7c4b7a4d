@@ -16,6 +16,13 @@ const IFIXIT_API = "https://www.ifixit.com/api/2.0";
 const YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search";
 
 /**
+ * IMPORTANT SETUP:
+ * You must provide a .env file at the project root with:
+ *   REACT_APP_YOUTUBE_API_KEY=YOUR_YOUTUBE_DATA_API_KEY
+ * Otherwise, video tutorial search will not work (API error / missing key)!
+ */
+
+/**
  * PUBLIC_INTERFACE
  * Expanded App for FixItFlow: Allows image upload, object recognition,
  * user problem description, fetches and displays iFixit repair step guides
@@ -175,59 +182,116 @@ function App() {
    * Fetch iFixit guides and YouTube videos, inferring search better from
    * both recognized label and user problem text.
    */
+  /**
+   * Fetch iFixit guides and YouTube videos, with enhanced API diagnostic and result handling.
+   */
   async function fetchGuidesAndVideos(mainKeyword, problemText = "") {
     setSearchLoading(true);
     setGuides([]);
     setVideos([]);
     let searchUsed = mainKeyword;
+    let errorMessage = null;
     try {
       // Step 1: Compose a smarter search query.
       let query = mainKeyword;
       if (problemText && problemText.length > 2) {
-        // Tailor search. Eg: "toaster won't heat up"
         query = `${mainKeyword} ${problemText}`.trim();
         searchUsed = query;
       }
-      // iFixit: Find relevant guides (by device or search endpoint)
-      let guidesResp = await fetch(
-        `${IFIXIT_API}/search/${encodeURIComponent(query)}`
-      );
-      let guidesJson = await guidesResp.json();
-      // Flatten search: Count guides for all items; prefer those with steps
+
+      // iFixit: Find relevant guides robustly
+      let guidesUrl = `${IFIXIT_API}/search/${encodeURIComponent(query)}`;
       let allGuides = [];
-      if (Array.isArray(guidesJson.results)) {
-        for (let item of guidesJson.results) {
-          if (item.guideid) allGuides.push(item);
-          if (item.guides && Array.isArray(item.guides))
-            allGuides.push(...item.guides);
+      let guidesJson = {};
+
+      try {
+        let guidesResp = await fetch(guidesUrl);
+        guidesJson = await guidesResp.json();
+
+        if (Array.isArray(guidesJson.results)) {
+          for (let item of guidesJson.results) {
+            // Both shape: individual guide or a device/group with guides
+            if (item.guideid) allGuides.push(item);
+            if (item.guides && Array.isArray(item.guides))
+              allGuides.push(...item.guides.filter(g => g.guideid));
+          }
+        }
+        // Some fallback: sometimes guides are top-level
+        if (allGuides.length === 0 && Array.isArray(guidesJson.guides)) {
+          allGuides = guidesJson.guides.filter(g => g.guideid);
+        }
+        // Sometimes single guide present as .guide
+        if (allGuides.length === 0 && guidesJson.guide && guidesJson.guide.guideid) {
+          allGuides.push(guidesJson.guide);
+        }
+        // Deduplicate by guideid
+        allGuides = Object.values(allGuides.reduce((acc, g) => {
+          if (g.guideid) acc[g.guideid] = g;
+          return acc;
+        }, {}));
+        setGuides(allGuides.slice(0, 4));
+      } catch (ifixErr) {
+        errorMessage = "iFixit API error: " + (ifixErr.message || "Could not fetch guides.");
+        setGuides([]);
+      }
+
+      // ---------- YouTube Video Tutorials Search ----------
+      // Must have a valid API key
+      const YT_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY;
+      if (!YT_API_KEY || YT_API_KEY === "YOUR_API_KEY_HERE") {
+        setVideos([]);
+        if (errorMessage)
+          errorMessage += " — ";
+        errorMessage = (errorMessage || "") + "YouTube API key is missing. Set REACT_APP_YOUTUBE_API_KEY in an .env file.";
+      } else {
+        const videoQ = encodeURIComponent(query + " repair tutorial OR fix guide");
+        let ytReq = `${YOUTUBE_SEARCH_URL}?key=${YT_API_KEY}&type=video&part=snippet&maxResults=4&q=${videoQ}`;
+        let ytRes, ytData;
+        try {
+          ytRes = await fetch(ytReq);
+          ytData = await ytRes.json();
+          if (!ytRes.ok || ytData.error) {
+            throw new Error(
+              (ytData.error && ytData.error.message) ||
+              `YouTube API error (HTTP ${ytRes.status})`
+            );
+          }
+          setVideos(
+            (ytData.items || []).map((vid) => ({
+              id: vid.id.videoId,
+              title: vid.snippet.title,
+              thumb: vid.snippet.thumbnails.medium.url,
+              channel: vid.snippet.channelTitle,
+            }))
+          );
+        } catch (ytErr) {
+          setVideos([]);
+          if (errorMessage)
+            errorMessage += " — ";
+          errorMessage = (errorMessage || "") + "YouTube error: " + ytErr.message;
         }
       }
-      // Deduplicate by guideid
-      allGuides = Object.values(
-        allGuides.reduce((acc, g) => {
-          acc[g.guideid] = g;
-          return acc;
-        }, {})
-      );
-      setGuides(allGuides.slice(0, 4));
-      // YouTube search for repair/tutorials
-      const videoQ =
-        encodeURIComponent(query + " repair tutorial OR fix guide");
-      let ytReq = `${YOUTUBE_SEARCH_URL}?key=${process.env.REACT_APP_YOUTUBE_API_KEY}&type=video&part=snippet&maxResults=4&q=${videoQ}`;
-      let ytRes = await fetch(ytReq);
-      let ytData = await ytRes.json();
-      setVideos(
-        ytData.items?.map((vid) => ({
-          id: vid.id.videoId,
-          title: vid.snippet.title,
-          thumb: vid.snippet.thumbnails.medium.url,
-          channel: vid.snippet.channelTitle,
-        })) || []
-      );
+
+      if (
+        (!allGuides || allGuides.length === 0) &&
+        (!YT_API_KEY || !errorMessage) &&
+        (!videos || videos.length === 0)
+      ) {
+        errorMessage =
+          errorMessage ||
+          "No matching repair guides or videos found for this query. Try a different keyword or description.";
+      }
     } catch (err) {
-      setRecognitionError("Fetching resources failed: " + err.message);
+      errorMessage =
+        (errorMessage ? errorMessage + " — " : "") + "Fetching resources failed: " + err.message;
       setGuides([]);
       setVideos([]);
+    }
+
+    if (errorMessage) {
+      setRecognitionError(errorMessage);
+    } else {
+      setRecognitionError(null);
     }
     setSearchLoading(false);
   }
@@ -312,13 +376,13 @@ function App() {
           <div style={sectionHeaderStyle(COLORS.secondary)}>
             <span>🔧 Step-by-step Repair Guides</span>
           </div>
-          <GuideStepsAccordion guides={guides} accentColor={COLORS.accent} />
+          <GuideStepsAccordion guides={guides} accentColor={COLORS.accent} recogError={recognitionError} />
         </section>
         <section style={{ marginTop: 36 }}>
           <div style={sectionHeaderStyle(COLORS.primary)}>
             <span>▶️ DIY Video Tutorials</span>
           </div>
-          <VideoGrid videos={videos} />
+          <VideoGrid videos={videos} recogError={recognitionError} />
         </section>
         <footer style={{ margin: "4rem auto 2rem", color: "#444", textAlign: "center" }}>
           <small>
@@ -697,7 +761,7 @@ function ProblemDescCard({ userProblem, setUserProblem, onSubmit, searchLoading,
  * Improved interactive accordion for Step-by-step Repair Guides.
  * Each guide shows its steps on click (fetch from iFixit if needed).
  */
-function GuideStepsAccordion({ guides, accentColor }) {
+function GuideStepsAccordion({ guides, accentColor, recogError }) {
   const [expanded, setExpanded] = useState(null);
   const [stepsData, setStepsData] = useState({});
   const [loadingStepGuide, setLoadingStepGuide] = useState(false);
@@ -721,9 +785,14 @@ function GuideStepsAccordion({ guides, accentColor }) {
     setLoadingStepGuide(false);
   };
 
-  // UI: If none, minimal.
-  if (!guides?.length)
-    return <div style={{ color: "#bbb", minHeight: 70 }}>No guides found.</div>;
+  // UI: If none, show API error if present, else default.
+  if (!guides?.length) {
+    return (
+      <div style={{ color: "#b53c00", minHeight: 70, fontWeight: 500 }}>
+        {recogError ? recogError : <span style={{ color: "#bbb" }}>No guides found.</span>}
+      </div>
+    );
+  }
   return (
     <div style={{
       display: "grid",
@@ -873,9 +942,13 @@ function GuideStepDetails({ guide, stepsDetail, loading }) {
 
 // ----------- Videos Grid ---------------------
 // PUBLIC_INTERFACE
-function VideoGrid({ videos }) {
+function VideoGrid({ videos, recogError }) {
   if (!videos?.length)
-    return <div style={{ color: "#bbb", minHeight: 70 }}>No video tutorials found.</div>;
+    return (
+      <div style={{ color: recogError ? "#b53c00" : "#bbb", minHeight: 70, fontWeight: 500 }}>
+        {recogError ? recogError : "No video tutorials found."}
+      </div>
+    );
   return (
     <div
       style={{
